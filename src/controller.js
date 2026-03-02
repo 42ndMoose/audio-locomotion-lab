@@ -22,13 +22,13 @@ export class ThirdPersonController {
     this.vel = new THREE.Vector3();
     this.move = new THREE.Vector3();
 
-    // Aim yaw/pitch (drives crosshair + movement basis in Aim)
-    this.moveYaw = 0;
-    this.movePitch = -0.15;
+    // Aim angles (Aim mode)
+    this.aimYaw = 0;
+    this.aimPitch = -0.15;
 
-    // Camera orbit yaw/pitch (drives camera placement in Free/Cursor/Aim)
+    // Camera orbit angles (Free mode uses these)
     this.camYaw = 0;
-    this.camPitch = -0.15;
+    this.camPitch = -0.20;
 
     // Camera distance
     this.camTargetDist = 6.0;
@@ -65,10 +65,7 @@ export class ThirdPersonController {
     this.pointerLocked = false;
     this.rmbHeld = false;
 
-    // Mode toggle (ALT)
-    this.cursorMode = false;
-
-    // Cursor visibility rule
+    // Cursor visibility rule: show cursor before first LMB
     this.firstLmbDone = false;
 
     // Sensitivity
@@ -88,18 +85,6 @@ export class ThirdPersonController {
 
   _bindEvents() {
     const onKeyDown = (e) => {
-      if (e.code === "AltLeft" || e.code === "AltRight") {
-        e.preventDefault();
-        e.stopPropagation();
-        this._toggleCursorMode();
-        return;
-      }
-
-      if (this.cursorMode && e.altKey) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-
       if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
         if (!this.sprintHeld) this._onShiftDown();
         this.sprintHeld = true;
@@ -135,10 +120,8 @@ export class ThirdPersonController {
       if (e.button === 0) {
         this.firstLmbDone = true;
 
-        // LMB locks pointer only when NOT in cursor mode
-        if (!this.cursorMode) {
-          this.domElement.requestPointerLock?.();
-        }
+        // LMB enters Aim mode (pointer lock)
+        this.domElement.requestPointerLock?.();
 
         this._updateCursorStyle();
       }
@@ -150,6 +133,17 @@ export class ThirdPersonController {
 
     const onPointerLockChange = () => {
       this.pointerLocked = document.pointerLockElement === this.domElement;
+
+      // When entering Aim mode, align camera orbit to aim so you don't snap.
+      if (this.pointerLocked) {
+        this.aimYaw = this.camYaw;
+        this.aimPitch = this.camPitch;
+      } else {
+        // Leaving Aim mode: keep orbit where aim left it
+        this.camYaw = this.aimYaw;
+        this.camPitch = this.aimPitch;
+      }
+
       this._updateCursorStyle();
     };
 
@@ -157,24 +151,24 @@ export class ThirdPersonController {
       const dx = e.movementX || 0;
       const dy = e.movementY || 0;
 
-      // Cursor mode OR Free mode with cursor visible: RMB orbit only
-      if ((this.cursorMode || !this.pointerLocked) && this.rmbHeld) {
-        this.camYaw -= dx * this.sens;
-        this.camPitch -= dy * this.sens;
-        this.camPitch = clamp(this.camPitch, -1.2, 0.35);
+      // Aim mode: mouse drives aim
+      if (this.pointerLocked) {
+        this.aimYaw -= dx * this.sens;
+        this.aimPitch -= dy * this.sens;
+        this.aimPitch = clamp(this.aimPitch, -1.1, 0.35);
+
+        // camera follows aim
+        this.camYaw = this.aimYaw;
+        this.camPitch = this.aimPitch;
         return;
       }
 
-      // Aim mode (pointer locked, not cursor mode): mouse drives both moveYaw and camYaw
-      if (!this.pointerLocked || this.cursorMode) return;
-
-      this.moveYaw -= dx * this.sens;
-      this.movePitch -= dy * this.sens;
-      this.movePitch = clamp(this.movePitch, -1.1, 0.35);
-
-      // Keep camera aligned to aim
-      this.camYaw = this.moveYaw;
-      this.camPitch = this.movePitch;
+      // Free mode: RMB drag orbits camera
+      if (this.rmbHeld) {
+        this.camYaw -= dx * this.sens;
+        this.camPitch -= dy * this.sens;
+        this.camPitch = clamp(this.camPitch, -1.2, 0.35);
+      }
     };
 
     const onWheel = (e) => {
@@ -194,28 +188,14 @@ export class ThirdPersonController {
     this._updateCursorStyle();
   }
 
-  _toggleCursorMode() {
-    this.cursorMode = !this.cursorMode;
-
-    if (this.cursorMode) {
-      // Entering cursor mode: keep camera where it is, and keep movement basis stable.
-      // We do NOT change moveYaw here.
-      if (this.pointerLocked) document.exitPointerLock?.();
-    } else {
-      // Leaving cursor mode: go back to Free mode (not Aim unless user clicks to lock)
-      // keep camera as-is
-    }
-
-    this._updateCursorStyle();
-  }
-
   _updateCursorStyle() {
-    // Cursor visible before first LMB OR while cursor mode
-    if (!this.firstLmbDone || this.cursorMode) {
+    // Cursor visible before first click, otherwise:
+    // - Aim mode: hidden
+    // - Free mode: crosshair
+    if (!this.firstLmbDone) {
       this.domElement.style.cursor = "default";
       return;
     }
-    // Free mode with pointer unlocked: crosshair
     this.domElement.style.cursor = this.pointerLocked ? "none" : "crosshair";
   }
 
@@ -249,9 +229,9 @@ export class ThirdPersonController {
 
   update(dt) {
     // Movement basis:
-    // - Aim mode: moveYaw (camera aligned anyway)
-    // - Free/Cursor: moveYaw stays stable unless aim mode updates it
-    const basisYaw = this.moveYaw;
+    // - Aim mode uses aimYaw
+    // - Free mode uses camera yaw (third-person action feel)
+    const basisYaw = this.pointerLocked ? this.aimYaw : this.camYaw;
 
     const fwd = new THREE.Vector3(Math.sin(basisYaw), 0, Math.cos(basisYaw));
     const right = new THREE.Vector3(fwd.z, 0, -fwd.x);
@@ -326,36 +306,28 @@ export class ThirdPersonController {
     }
 
     // Facing:
-    // - Aim mode: snap to face away from camera (crosshair): face moveYaw
-    // - Free/Cursor: face movement direction when moving, otherwise keep last yaw
-    const inAimMode = this.pointerLocked && !this.cursorMode;
-
+    // - Aim mode: snap to aim yaw
+    // - Free mode: face movement direction when moving
     let bodyYaw = this._bodyYaw;
-    if (inAimMode) {
-      bodyYaw = this.moveYaw;
-    } else {
-      if (hasMove) {
-        // Face the actual movement direction (omnidir), independent from camera orbit
-        bodyYaw = Math.atan2(this.move.x, this.move.z);
-      }
+    if (this.pointerLocked) {
+      bodyYaw = this.aimYaw;
+    } else if (hasMove) {
+      bodyYaw = Math.atan2(this.move.x, this.move.z);
     }
 
     this._bodyYaw = bodyYaw;
     this.characterRoot.rotation.y = bodyYaw;
 
-    // Camera positioning uses camYaw/camPitch always (orbit/aim both supported)
+    // Camera placement uses camYaw/camPitch always
     this.camDist = damp(this.camDist, this.camTargetDist, 10.0, dt);
-
-    const pitchUsed = this.camPitch;
-    const yawUsed = this.camYaw;
 
     const height = this.camHeight * (this.isCrouching ? this.crouchHeightFactor : 1.0);
     const target = new THREE.Vector3(this.pos.x, this.pos.y + height, this.pos.z);
 
     const camBack = new THREE.Vector3(
-      Math.sin(yawUsed) * Math.cos(pitchUsed),
-      Math.sin(pitchUsed),
-      Math.cos(yawUsed) * Math.cos(pitchUsed)
+      Math.sin(this.camYaw) * Math.cos(this.camPitch),
+      Math.sin(this.camPitch),
+      Math.cos(this.camYaw) * Math.cos(this.camPitch)
     );
 
     const camPos = new THREE.Vector3().copy(target).addScaledVector(camBack, -this.camDist);
@@ -363,7 +335,7 @@ export class ThirdPersonController {
     this.camera.lookAt(target);
 
     this._syncCharacter();
-    this._updateHud();
+    this._updateHud(stage);
 
     if (this.onPose) {
       this.onPose({ position: this.pos, bodyYaw: this._bodyYaw });
@@ -374,16 +346,14 @@ export class ThirdPersonController {
     this.characterRoot.position.copy(this.pos);
   }
 
-  _updateHud() {
+  _updateHud(stageActive) {
     if (!this.hud) return;
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.hud.speed.textContent = `Speed: ${speed.toFixed(1)}`;
+    this.hud.sprint.textContent = `Sprint: ${stageActive}`;
 
-    const stage = this._sprintStageActive();
-    this.hud.sprint.textContent = `Sprint: ${stage}`;
-
-    const mode = (this.pointerLocked && !this.cursorMode) ? "aim" : (this.cursorMode ? "cursor" : "free");
+    const mode = this.pointerLocked ? "aim" : "free";
     this.hud.mode.textContent = `Mode: ${mode}`;
   }
 }
