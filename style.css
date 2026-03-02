@@ -7,6 +7,23 @@ html, body {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
+/* Stop awkward text highlighting everywhere */
+* {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* But keep file inputs usable */
+input, button {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input[type="file"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 #c {
   display: block;
   width: 100vw;
