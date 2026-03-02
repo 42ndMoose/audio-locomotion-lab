@@ -17,29 +17,29 @@ export class ThirdPersonController {
     this.hud = hud;
     this.onPose = onPose || null;
 
-    // Kinematic character state
+    // Kinematic state
     this.pos = new THREE.Vector3(0, 1.0, 0);
     this.vel = new THREE.Vector3();
     this.move = new THREE.Vector3();
 
-    // Aim view (pointer lock)
-    this.yaw = 0;
-    this.pitch = -0.15;
+    // Aim yaw/pitch (drives crosshair + movement basis in Aim)
+    this.moveYaw = 0;
+    this.movePitch = -0.15;
 
-    // Orbit view (cursor mode)
-    this.orbitYaw = 0;
-    this.orbitPitch = -0.20;
+    // Camera orbit yaw/pitch (drives camera placement in Free/Cursor/Aim)
+    this.camYaw = 0;
+    this.camPitch = -0.15;
 
-    // Camera
+    // Camera distance
     this.camTargetDist = 6.0;
     this.camDist = 6.0;
     this.camMin = 2.0;
     this.camMax = 18.0;
     this.camHeight = 1.6;
 
-    // Movement
-    this.walkSpeed = 6.0; // stage 0
-    this.sprintSpeeds = [0, 10.0, 16.0, 26.0, 42.0]; // 1..4
+    // Movement tuning
+    this.walkSpeed = 6.0;
+    this.sprintSpeeds = [0, 10.0, 16.0, 26.0, 42.0];
     this.accelGround = 52.0;
     this.accelAir = 14.0;
     this.friction = 6.5;
@@ -47,11 +47,11 @@ export class ThirdPersonController {
     this.gravity = 26.0;
     this.jumpSpeed = 8.5;
 
-    // Crouch / slide
+    // Crouch
     this.isCrouching = false;
     this.crouchHeightFactor = 0.65;
 
-    // Sprint stage logic
+    // Sprint
     this.sprintStage = 0;
     this.sprintHeld = false;
     this.lastShiftUpAt = -999;
@@ -63,20 +63,18 @@ export class ThirdPersonController {
     // Input
     this.keys = new Set();
     this.pointerLocked = false;
-
-    // RMB orbit drag (in cursor mode)
     this.rmbHeld = false;
 
-    // Cursor mode toggle (ALT)
+    // Mode toggle (ALT)
     this.cursorMode = false;
 
-    // Cursor visibility rule: show cursor before first LMB, or in cursor mode
+    // Cursor visibility rule
     this.firstLmbDone = false;
 
-    // Mouse sensitivity
+    // Sensitivity
     this.sens = 0.0025;
 
-    // Cache
+    // Facing cache
     this._bodyYaw = 0;
 
     this._bindEvents();
@@ -90,7 +88,6 @@ export class ThirdPersonController {
 
   _bindEvents() {
     const onKeyDown = (e) => {
-      // ALT toggles cursor mode
       if (e.code === "AltLeft" || e.code === "AltRight") {
         e.preventDefault();
         e.stopPropagation();
@@ -98,8 +95,6 @@ export class ThirdPersonController {
         return;
       }
 
-      // While cursor mode is on, avoid browser Alt-shortcut fallout as much as we can.
-      // Some OS-level shortcuts may still win.
       if (this.cursorMode && e.altKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -137,12 +132,14 @@ export class ThirdPersonController {
     const onMouseDown = (e) => {
       if (e.button === 2) this.rmbHeld = true;
 
-      // First LMB enables pointer lock only if not in cursor mode
       if (e.button === 0) {
         this.firstLmbDone = true;
+
+        // LMB locks pointer only when NOT in cursor mode
         if (!this.cursorMode) {
           this.domElement.requestPointerLock?.();
         }
+
         this._updateCursorStyle();
       }
     };
@@ -160,22 +157,24 @@ export class ThirdPersonController {
       const dx = e.movementX || 0;
       const dy = e.movementY || 0;
 
-      // Cursor mode: orbit only when RMB is held
-      if (this.cursorMode) {
-        if (this.rmbHeld) {
-          this.orbitYaw -= dx * this.sens;
-          this.orbitPitch -= dy * this.sens;
-          this.orbitPitch = clamp(this.orbitPitch, -1.2, 0.35);
-        }
+      // Cursor mode OR Free mode with cursor visible: RMB orbit only
+      if ((this.cursorMode || !this.pointerLocked) && this.rmbHeld) {
+        this.camYaw -= dx * this.sens;
+        this.camPitch -= dy * this.sens;
+        this.camPitch = clamp(this.camPitch, -1.2, 0.35);
         return;
       }
 
-      // Aim mode: requires pointer lock
-      if (!this.pointerLocked) return;
+      // Aim mode (pointer locked, not cursor mode): mouse drives both moveYaw and camYaw
+      if (!this.pointerLocked || this.cursorMode) return;
 
-      this.yaw -= dx * this.sens;
-      this.pitch -= dy * this.sens;
-      this.pitch = clamp(this.pitch, -1.1, 0.35);
+      this.moveYaw -= dx * this.sens;
+      this.movePitch -= dy * this.sens;
+      this.movePitch = clamp(this.movePitch, -1.1, 0.35);
+
+      // Keep camera aligned to aim
+      this.camYaw = this.moveYaw;
+      this.camPitch = this.movePitch;
     };
 
     const onWheel = (e) => {
@@ -198,27 +197,25 @@ export class ThirdPersonController {
   _toggleCursorMode() {
     this.cursorMode = !this.cursorMode;
 
-    // Entering cursor mode must NOT snap the view.
-    // Sync orbit angles to the current aim angles so it continues seamlessly.
     if (this.cursorMode) {
-      this.orbitYaw = this.yaw;
-      this.orbitPitch = this.pitch;
-
-      // Cursor mode wants cursor visible and pointer unlocked
+      // Entering cursor mode: keep camera where it is, and keep movement basis stable.
+      // We do NOT change moveYaw here.
       if (this.pointerLocked) document.exitPointerLock?.();
+    } else {
+      // Leaving cursor mode: go back to Free mode (not Aim unless user clicks to lock)
+      // keep camera as-is
     }
 
     this._updateCursorStyle();
   }
 
   _updateCursorStyle() {
-    // Cursor visible:
-    // - before first LMB
-    // - OR while cursor mode is on
+    // Cursor visible before first LMB OR while cursor mode
     if (!this.firstLmbDone || this.cursorMode) {
       this.domElement.style.cursor = "default";
       return;
     }
+    // Free mode with pointer unlocked: crosshair
     this.domElement.style.cursor = this.pointerLocked ? "none" : "crosshair";
   }
 
@@ -244,7 +241,6 @@ export class ThirdPersonController {
   }
 
   _sprintStageActive() {
-    // Stage persists for up to 2s after releasing Shift, to preserve momentum feel.
     if (this.sprintHeld) return this.sprintStage;
     if (this.sprintStage > 0 && this._timeSinceShiftUp() <= this.shiftChainWindow) return this.sprintStage;
     this.sprintStage = 0;
@@ -253,19 +249,18 @@ export class ThirdPersonController {
 
   update(dt) {
     // Movement basis:
-    // - aim mode uses yaw
-    // - cursor mode uses orbitYaw
-    const camYaw = this.cursorMode ? this.orbitYaw : this.yaw;
+    // - Aim mode: moveYaw (camera aligned anyway)
+    // - Free/Cursor: moveYaw stays stable unless aim mode updates it
+    const basisYaw = this.moveYaw;
 
-    const fwd = new THREE.Vector3(Math.sin(camYaw), 0, Math.cos(camYaw));
+    const fwd = new THREE.Vector3(Math.sin(basisYaw), 0, Math.cos(basisYaw));
     const right = new THREE.Vector3(fwd.z, 0, -fwd.x);
 
     let x = 0, z = 0;
     if (this.keys.has("KeyW")) z += 1;
     if (this.keys.has("KeyS")) z -= 1;
 
-    // FIX: A/D are inverted in your build, so flip the contributions directly.
-    // A should strafe left, D should strafe right.
+    // A left, D right (your working mapping)
     if (this.keys.has("KeyD")) x -= 1;
     if (this.keys.has("KeyA")) x += 1;
 
@@ -287,10 +282,8 @@ export class ThirdPersonController {
     const accel = this.grounded ? this.accelGround : this.accelAir;
     const fric = (crouch && this.grounded) ? this.slideFriction : this.friction;
 
-    // Horizontal velocity
     const hv = new THREE.Vector3(this.vel.x, 0, this.vel.z);
 
-    // Friction on ground only
     if (this.grounded) {
       const speed = hv.length();
       if (speed > 0.0001) {
@@ -302,7 +295,6 @@ export class ThirdPersonController {
       }
     }
 
-    // Only push toward desired velocity when player is actively moving
     if (hasMove) {
       const desiredVel = new THREE.Vector3().copy(this.move).multiplyScalar(targetSpeed);
 
@@ -318,13 +310,9 @@ export class ThirdPersonController {
       this.vel.z += delta.z;
     }
 
-    // Gravity
     this.vel.y -= this.gravity * dt;
-
-    // Integrate
     this.pos.addScaledVector(this.vel, dt);
 
-    // Ground collision
     const groundY = this.getGroundHeightAt(this.pos.x, this.pos.z);
     const charHalfHeight = 0.9;
     const footY = this.pos.y - charHalfHeight;
@@ -337,56 +325,48 @@ export class ThirdPersonController {
       this.grounded = false;
     }
 
-    // Facing rules
-    // - cursor mode: omnidirectional, face movement direction if moving
-    // - aim mode + pointer lock: face aim yaw
-    // - aim mode + no lock: face movement direction if moving
-    let bodyYaw = this.yaw;
+    // Facing:
+    // - Aim mode: snap to face away from camera (crosshair): face moveYaw
+    // - Free/Cursor: face movement direction when moving, otherwise keep last yaw
+    const inAimMode = this.pointerLocked && !this.cursorMode;
 
-    if (this.cursorMode) {
-      if (hasMove) {
-        bodyYaw = Math.atan2(this.move.x, this.move.z) + camYaw;
-      }
-      // IMPORTANT: RMB orbit must not affect facing. Only movement affects it.
+    let bodyYaw = this._bodyYaw;
+    if (inAimMode) {
+      bodyYaw = this.moveYaw;
     } else {
-      if (this.pointerLocked) {
-        bodyYaw = this.yaw;
-      } else if (hasMove) {
-        bodyYaw = Math.atan2(this.move.x, this.move.z) + camYaw;
+      if (hasMove) {
+        // Face the actual movement direction (omnidir), independent from camera orbit
+        bodyYaw = Math.atan2(this.move.x, this.move.z);
       }
     }
 
     this._bodyYaw = bodyYaw;
     this.characterRoot.rotation.y = bodyYaw;
 
-    // Smooth zoom
+    // Camera positioning uses camYaw/camPitch always (orbit/aim both supported)
     this.camDist = damp(this.camDist, this.camTargetDist, 10.0, dt);
 
-    // Camera pitch basis
-    const pitchUsed = this.cursorMode ? this.orbitPitch : this.pitch;
+    const pitchUsed = this.camPitch;
+    const yawUsed = this.camYaw;
 
     const height = this.camHeight * (this.isCrouching ? this.crouchHeightFactor : 1.0);
     const target = new THREE.Vector3(this.pos.x, this.pos.y + height, this.pos.z);
 
     const camBack = new THREE.Vector3(
-      Math.sin(camYaw) * Math.cos(pitchUsed),
+      Math.sin(yawUsed) * Math.cos(pitchUsed),
       Math.sin(pitchUsed),
-      Math.cos(camYaw) * Math.cos(pitchUsed)
+      Math.cos(yawUsed) * Math.cos(pitchUsed)
     );
 
     const camPos = new THREE.Vector3().copy(target).addScaledVector(camBack, -this.camDist);
-
     this.camera.position.lerp(camPos, 1 - Math.exp(-18.0 * dt));
     this.camera.lookAt(target);
 
     this._syncCharacter();
-    this._updateHud(stage);
+    this._updateHud();
 
     if (this.onPose) {
-      this.onPose({
-        position: this.pos,
-        bodyYaw: this._bodyYaw,
-      });
+      this.onPose({ position: this.pos, bodyYaw: this._bodyYaw });
     }
   }
 
@@ -394,14 +374,16 @@ export class ThirdPersonController {
     this.characterRoot.position.copy(this.pos);
   }
 
-  _updateHud(stageActive) {
+  _updateHud() {
     if (!this.hud) return;
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.hud.speed.textContent = `Speed: ${speed.toFixed(1)}`;
-    this.hud.sprint.textContent = `Sprint: ${stageActive}`;
 
-    const mode = this.cursorMode ? "cursor" : (this.pointerLocked ? "aim" : "free");
+    const stage = this._sprintStageActive();
+    this.hud.sprint.textContent = `Sprint: ${stage}`;
+
+    const mode = (this.pointerLocked && !this.cursorMode) ? "aim" : (this.cursorMode ? "cursor" : "free");
     this.hud.mode.textContent = `Mode: ${mode}`;
   }
 }
