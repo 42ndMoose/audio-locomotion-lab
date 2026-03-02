@@ -22,11 +22,7 @@ export class ThirdPersonController {
     this.vel = new THREE.Vector3();
     this.move = new THREE.Vector3();
 
-    // Aim angles (Aim mode)
-    this.aimYaw = 0;
-    this.aimPitch = -0.15;
-
-    // Camera orbit angles (Free mode uses these)
+    // Camera orbit angles (the ONLY orientation basis now)
     this.camYaw = 0;
     this.camPitch = -0.20;
 
@@ -62,10 +58,9 @@ export class ThirdPersonController {
 
     // Input
     this.keys = new Set();
-    this.pointerLocked = false;
     this.rmbHeld = false;
 
-    // Cursor visibility rule: show cursor before first LMB
+    // Cursor behavior
     this.firstLmbDone = false;
 
     // Sensitivity
@@ -119,10 +114,6 @@ export class ThirdPersonController {
 
       if (e.button === 0) {
         this.firstLmbDone = true;
-
-        // LMB enters Aim mode (pointer lock)
-        this.domElement.requestPointerLock?.();
-
         this._updateCursorStyle();
       }
     };
@@ -131,44 +122,16 @@ export class ThirdPersonController {
       if (e.button === 2) this.rmbHeld = false;
     };
 
-    const onPointerLockChange = () => {
-      this.pointerLocked = document.pointerLockElement === this.domElement;
-
-      // When entering Aim mode, align camera orbit to aim so you don't snap.
-      if (this.pointerLocked) {
-        this.aimYaw = this.camYaw;
-        this.aimPitch = this.camPitch;
-      } else {
-        // Leaving Aim mode: keep orbit where aim left it
-        this.camYaw = this.aimYaw;
-        this.camPitch = this.aimPitch;
-      }
-
-      this._updateCursorStyle();
-    };
-
     const onMouseMove = (e) => {
       const dx = e.movementX || 0;
       const dy = e.movementY || 0;
 
-      // Aim mode: mouse drives aim
-      if (this.pointerLocked) {
-        this.aimYaw -= dx * this.sens;
-        this.aimPitch -= dy * this.sens;
-        this.aimPitch = clamp(this.aimPitch, -1.1, 0.35);
+      // Free mode camera orbit only when RMB held
+      if (!this.rmbHeld) return;
 
-        // camera follows aim
-        this.camYaw = this.aimYaw;
-        this.camPitch = this.aimPitch;
-        return;
-      }
-
-      // Free mode: RMB drag orbits camera
-      if (this.rmbHeld) {
-        this.camYaw -= dx * this.sens;
-        this.camPitch -= dy * this.sens;
-        this.camPitch = clamp(this.camPitch, -1.2, 0.35);
-      }
+      this.camYaw -= dx * this.sens;
+      this.camPitch -= dy * this.sens;
+      this.camPitch = clamp(this.camPitch, -1.2, 0.35);
     };
 
     const onWheel = (e) => {
@@ -176,27 +139,22 @@ export class ThirdPersonController {
       this.camTargetDist = clamp(this.camTargetDist + delta * 0.7, this.camMin, this.camMax);
     };
 
+    // Prevent context menu on RMB
     window.addEventListener("contextmenu", (e) => e.preventDefault());
+
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousemove", onMouseMove);
     this.domElement.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("wheel", onWheel, { passive: true });
-    document.addEventListener("pointerlockchange", onPointerLockChange);
 
     this._updateCursorStyle();
   }
 
   _updateCursorStyle() {
-    // Cursor visible before first click, otherwise:
-    // - Aim mode: hidden
-    // - Free mode: crosshair
-    if (!this.firstLmbDone) {
-      this.domElement.style.cursor = "default";
-      return;
-    }
-    this.domElement.style.cursor = this.pointerLocked ? "none" : "crosshair";
+    // Cursor visible before first click; afterward keep crosshair
+    this.domElement.style.cursor = this.firstLmbDone ? "crosshair" : "default";
   }
 
   _onShiftDown() {
@@ -228,22 +186,24 @@ export class ThirdPersonController {
   }
 
   update(dt) {
-    // Movement basis:
-    // - Aim mode uses aimYaw
-    // - Free mode uses camera yaw (third-person action feel)
-    const basisYaw = this.pointerLocked ? this.aimYaw : this.camYaw;
+    // Movement basis is ALWAYS camera yaw
+    const basisYaw = this.camYaw;
 
+    // Forward = where the camera is facing on the ground plane
     const fwd = new THREE.Vector3(Math.sin(basisYaw), 0, Math.cos(basisYaw));
     const right = new THREE.Vector3(fwd.z, 0, -fwd.x);
 
+    // Inputs
     let x = 0, z = 0;
     if (this.keys.has("KeyW")) z += 1;
     if (this.keys.has("KeyS")) z -= 1;
 
-    // A left, D right (your working mapping)
+    // Keep the mapping that already matches your build
+    // (D moves right, A moves left in your world)
     if (this.keys.has("KeyD")) x -= 1;
     if (this.keys.has("KeyA")) x += 1;
 
+    // Build move vector relative to camera
     this.move.set(0, 0, 0);
     this.move.addScaledVector(fwd, z);
     this.move.addScaledVector(right, x);
@@ -251,6 +211,7 @@ export class ThirdPersonController {
     const hasMove = this.move.lengthSq() > 0.0001;
     if (hasMove) this.move.normalize();
 
+    // Speed selection
     const stage = this._sprintStageActive();
     let baseSpeed = this.walkSpeed;
     if (stage > 0) baseSpeed = this.sprintSpeeds[stage];
@@ -262,8 +223,10 @@ export class ThirdPersonController {
     const accel = this.grounded ? this.accelGround : this.accelAir;
     const fric = (crouch && this.grounded) ? this.slideFriction : this.friction;
 
+    // Horizontal velocity
     const hv = new THREE.Vector3(this.vel.x, 0, this.vel.z);
 
+    // Friction on ground only
     if (this.grounded) {
       const speed = hv.length();
       if (speed > 0.0001) {
@@ -275,6 +238,7 @@ export class ThirdPersonController {
       }
     }
 
+    // Only push toward desired velocity when player is actively giving input
     if (hasMove) {
       const desiredVel = new THREE.Vector3().copy(this.move).multiplyScalar(targetSpeed);
 
@@ -290,9 +254,11 @@ export class ThirdPersonController {
       this.vel.z += delta.z;
     }
 
+    // Gravity + integrate
     this.vel.y -= this.gravity * dt;
     this.pos.addScaledVector(this.vel, dt);
 
+    // Ground collision
     const groundY = this.getGroundHeightAt(this.pos.x, this.pos.z);
     const charHalfHeight = 0.9;
     const footY = this.pos.y - charHalfHeight;
@@ -305,20 +271,15 @@ export class ThirdPersonController {
       this.grounded = false;
     }
 
-    // Facing:
-    // - Aim mode: snap to aim yaw
-    // - Free mode: face movement direction when moving
+    // Facing: face movement direction when moving
     let bodyYaw = this._bodyYaw;
-    if (this.pointerLocked) {
-      bodyYaw = this.aimYaw;
-    } else if (hasMove) {
+    if (hasMove) {
       bodyYaw = Math.atan2(this.move.x, this.move.z);
     }
-
     this._bodyYaw = bodyYaw;
     this.characterRoot.rotation.y = bodyYaw;
 
-    // Camera placement uses camYaw/camPitch always
+    // Camera placement
     this.camDist = damp(this.camDist, this.camTargetDist, 10.0, dt);
 
     const height = this.camHeight * (this.isCrouching ? this.crouchHeightFactor : 1.0);
@@ -352,8 +313,6 @@ export class ThirdPersonController {
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.hud.speed.textContent = `Speed: ${speed.toFixed(1)}`;
     this.hud.sprint.textContent = `Sprint: ${stageActive}`;
-
-    const mode = this.pointerLocked ? "aim" : "free";
-    this.hud.mode.textContent = `Mode: ${mode}`;
+    this.hud.mode.textContent = `Mode: free`;
   }
 }
