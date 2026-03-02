@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { clamp } from "./utils.js";
 
 export class AudioEmitterSystem {
   constructor({ listener, scene, camera, domOverlayList }) {
@@ -12,29 +11,18 @@ export class AudioEmitterSystem {
     this.mouseNDC = new THREE.Vector2();
 
     this.emitters = [];
-    this.masterGain = null;
 
-    this._initAudioGraph();
     this._bindPicking();
   }
 
-  _initAudioGraph() {
-    // Three.js Audio uses the same AudioContext underneath
-    const ctx = this.listener.context;
-    this.masterGain = ctx.createGain();
-    this.masterGain.gain.value = 0.9;
-    this.masterGain.connect(ctx.destination);
-  }
-
   createEmitters() {
-    // Minimal layout around center
     const points = [
       { name: "Emitter A", pos: new THREE.Vector3(8, 1, 0) },
       { name: "Emitter B", pos: new THREE.Vector3(-8, 1, 0) },
       { name: "Emitter C", pos: new THREE.Vector3(0, 1, 8) },
       { name: "Emitter D", pos: new THREE.Vector3(0, 1, -8) },
       { name: "Emitter E", pos: new THREE.Vector3(12, 1, 12) },
-      { name: "Emitter F", pos: new THREE.Vector3(-12, 1, -12) }
+      { name: "Emitter F", pos: new THREE.Vector3(-12, 1, -12) },
     ];
 
     for (let i = 0; i < points.length; i++) {
@@ -49,7 +37,7 @@ export class AudioEmitterSystem {
     const group = new THREE.Group();
     group.position.copy(pos);
 
-    // Visible object (minimal)
+    // Visible object
     const baseGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.25, 24);
     const baseMat = new THREE.MeshStandardMaterial({ color: 0x9aa4b2, roughness: 0.9, metalness: 0.05 });
     const base = new THREE.Mesh(baseGeo, baseMat);
@@ -65,7 +53,7 @@ export class AudioEmitterSystem {
     viz.position.set(0, 1.0, 0);
     group.add(viz);
 
-    // A faint ring
+    // Ring
     const ringGeo = new THREE.TorusGeometry(1.1, 0.03, 10, 48);
     const ringMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 1.0, metalness: 0.0 });
     const ring = new THREE.Mesh(ringGeo, ringMat);
@@ -73,28 +61,34 @@ export class AudioEmitterSystem {
     ring.position.y = 0.05;
     group.add(ring);
 
-    // Positional audio + analyser
+    // Positional audio
     const sound = new THREE.PositionalAudio(this.listener);
     sound.setRefDistance(4);
     sound.setRolloffFactor(1.7);
     sound.setDistanceModel("inverse");
+    sound.setDirectionalCone(210, 260, 0.35);
     group.add(sound);
 
-    const analyser = new THREE.AudioAnalyser(sound, 64);
-
-    // start with a small oscillator so you get something immediately
-    const oscNode = this._makeOscillatorSource(220 + index * 50);
+    // IMPORTANT FIX:
+    // Route sources through THREE's positional chain using setNodeSource()
+    // so the panner uses the emitter object's world position.
     const ctx = this.listener.context;
+
+    // Default: oscillator so you hear something immediately
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = 220 + index * 50;
 
     const gain = ctx.createGain();
     gain.gain.value = 0.0; // muted until playing
 
-    oscNode.connect(gain);
-    gain.connect(sound.getOutput());
+    osc.connect(gain);
+    sound.setNodeSource(gain);
 
-    oscNode.start();
+    osc.start();
 
-    // make picking easy
+    const analyser = new THREE.AudioAnalyser(sound, 64);
+
     group.userData._isEmitter = true;
 
     return {
@@ -105,68 +99,65 @@ export class AudioEmitterSystem {
       ring,
       sound,
       analyser,
-      playing: false,
-      sourceKind: "osc",
-      oscNode,
-      gainNode: gain
-    };
-  }
 
-  _makeOscillatorSource(freq) {
-    const ctx = this.listener.context;
-    const osc = ctx.createOscillator();
-    osc.type = "sine";
-    osc.frequency.value = freq;
-    return osc;
+      playing: false,
+
+      // source state
+      sourceKind: "osc",
+      oscNode: osc,
+      nodeGain: gain,
+
+      // file state (if loaded)
+      fileSource: null,
+    };
   }
 
   async setEmitterFile(emitter, file) {
     const ctx = this.listener.context;
 
-    // Stop old oscillator path (we keep nodes but mute)
-    emitter.gainNode.gain.value = 0.0;
-
-    // Decode audio file
+    // Decode audio
     const arr = await file.arrayBuffer();
     const audioBuffer = await ctx.decodeAudioData(arr);
 
-    // Create a looping buffer source
+    // Stop previous file source if any
+    if (emitter.fileSource) {
+      try { emitter.fileSource.stop(); } catch (_) {}
+      emitter.fileSource = null;
+    }
+
+    // Create looping buffer source
     const src = ctx.createBufferSource();
     src.buffer = audioBuffer;
     src.loop = true;
 
-    const gain = ctx.createGain();
-    gain.gain.value = emitter.playing ? 0.9 : 0.0;
+    // Keep the same gain node already connected through the positional chain
+    // Just swap the upstream source feeding it.
+    // Mute oscillator upstream (it can keep running quietly).
+    emitter.nodeGain.gain.value = emitter.playing ? 0.9 : 0.0;
 
-    src.connect(gain);
-    gain.connect(emitter.sound.getOutput());
+    // Disconnect oscillator from gain to avoid mixing (safe-guard)
+    try { emitter.oscNode.disconnect(); } catch (_) {}
+
+    // Connect file source into gain
+    src.connect(emitter.nodeGain);
     src.start();
 
     emitter.sourceKind = "file";
     emitter.fileSource = src;
-    emitter.fileGain = gain;
   }
 
   toggleEmitter(emitter) {
-    // ensure audio context resumes on user gesture
     this.listener.context.resume?.();
-
     emitter.playing = !emitter.playing;
-
-    if (emitter.sourceKind === "file" && emitter.fileGain) {
-      emitter.fileGain.gain.value = emitter.playing ? 0.9 : 0.0;
-    } else {
-      emitter.gainNode.gain.value = emitter.playing ? 0.9 : 0.0;
-    }
+    emitter.nodeGain.gain.value = emitter.playing ? 0.9 : 0.0;
   }
 
   update(dt) {
-    // update minimal visualizers
     for (const e of this.emitters) {
       const data = e.analyser.getFrequencyData();
       let sum = 0;
       for (let i = 0; i < data.length; i++) sum += data[i];
-      const avg = sum / (data.length * 255); // 0..1
+      const avg = sum / (data.length * 255);
 
       const height = 0.2 + avg * 3.0;
       e.viz.scale.y = height;
@@ -175,17 +166,16 @@ export class AudioEmitterSystem {
       const ringScale = 1.0 + avg * 0.5;
       e.ring.scale.set(ringScale, ringScale, ringScale);
 
-      // subtle spin when active
       if (e.playing) e.ring.rotation.z += dt * (0.6 + avg * 1.2);
     }
   }
 
   _bindPicking() {
     window.addEventListener("click", (ev) => {
-      // if pointer is locked, clicks are for gameplay, not picking
+      // if pointer is locked, clicks are gameplay
       if (document.pointerLockElement) return;
 
-      const rect = this.camera?.viewportRect || this._getCanvasRect();
+      const rect = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
       const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
 
@@ -214,11 +204,6 @@ export class AudioEmitterSystem {
       cur = cur.parent;
     }
     return null;
-  }
-
-  _getCanvasRect() {
-    // fallback, assumes full-screen canvas
-    return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
   }
 
   _addRowUI(emitter) {
