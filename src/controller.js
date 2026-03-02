@@ -22,9 +22,13 @@ export class ThirdPersonController {
     this.vel = new THREE.Vector3();
     this.move = new THREE.Vector3();
 
-    // Camera orbit angles (single source of truth for BOTH modes)
+    // Free camera orbit angles (used in free mode, also used as the basis for WASD)
     this.camYaw = 0;
     this.camPitch = -0.20;
+
+    // Aim angles (only meaningful in pointer lock; we keep them to avoid drift)
+    this.aimYaw = 0;
+    this.aimPitch = -0.15;
 
     // Camera distance
     this.camTargetDist = 6.0;
@@ -59,8 +63,6 @@ export class ThirdPersonController {
     // Input
     this.keys = new Set();
     this.rmbHeld = false;
-
-    // Aim mode (pointer lock)
     this.pointerLocked = false;
 
     // Cursor behavior
@@ -115,10 +117,12 @@ export class ThirdPersonController {
     const onMouseDown = (e) => {
       if (e.button === 2) this.rmbHeld = true;
 
-      // LMB enters Aim mode (pointer lock)
       if (e.button === 0) {
         this.firstLmbDone = true;
+
+        // LMB enters Aim mode (pointer lock) — keep this behavior since you said you like aim mode
         this.domElement.requestPointerLock?.();
+
         this._updateCursorStyle();
       }
     };
@@ -129,6 +133,17 @@ export class ThirdPersonController {
 
     const onPointerLockChange = () => {
       this.pointerLocked = document.pointerLockElement === this.domElement;
+
+      if (this.pointerLocked) {
+        // Entering aim: sync aim to current free camera so there is NO snap
+        this.aimYaw = this.camYaw;
+        this.aimPitch = this.camPitch;
+      } else {
+        // Exiting aim: keep free camera where aim left it (NO displacement)
+        this.camYaw = this.aimYaw;
+        this.camPitch = this.aimPitch;
+      }
+
       this._updateCursorStyle();
     };
 
@@ -136,20 +151,29 @@ export class ThirdPersonController {
       const dx = e.movementX || 0;
       const dy = e.movementY || 0;
 
-      // Aim mode: mouse always rotates camera
+      // Aim mode: mouse steers aim; camera follows aim
       if (this.pointerLocked) {
-        this.camYaw -= dx * this.sens;
-        this.camPitch -= dy * this.sens;
-        this.camPitch = clamp(this.camPitch, -1.1, 0.35);
+        this.aimYaw -= dx * this.sens;
+        this.aimPitch -= dy * this.sens;
+        this.aimPitch = clamp(this.aimPitch, -1.1, 0.35);
+
+        // Camera matches aim exactly in aim mode
+        this.camYaw = this.aimYaw;
+        this.camPitch = this.aimPitch;
         return;
       }
 
       // Free mode: RMB drag orbits camera
-      if (this.rmbHeld) {
-        this.camYaw -= dx * this.sens;
-        this.camPitch -= dy * this.sens;
-        this.camPitch = clamp(this.camPitch, -1.2, 0.35);
-      }
+      if (!this.rmbHeld) return;
+
+      this.camYaw -= dx * this.sens;
+      this.camPitch -= dy * this.sens;
+      this.camPitch = clamp(this.camPitch, -1.2, 0.35);
+
+      // IMPORTANT: keep aim angles synced to free camera while not locked
+      // so that entering aim later will be seamless and never "displace" WASD.
+      this.aimYaw = this.camYaw;
+      this.aimPitch = this.camPitch;
     };
 
     const onWheel = (e) => {
@@ -157,6 +181,7 @@ export class ThirdPersonController {
       this.camTargetDist = clamp(this.camTargetDist + delta * 0.7, this.camMin, this.camMax);
     };
 
+    // Prevent context menu on RMB
     window.addEventListener("contextmenu", (e) => e.preventDefault());
 
     window.addEventListener("keydown", onKeyDown);
@@ -171,12 +196,13 @@ export class ThirdPersonController {
   }
 
   _updateCursorStyle() {
-    // Before first click: default cursor
+    // Cursor visible before first click; after that:
+    // - Aim mode: hidden
+    // - Free mode: crosshair
     if (!this.firstLmbDone) {
       this.domElement.style.cursor = "default";
       return;
     }
-    // Aim mode: hide cursor, Free mode: crosshair
     this.domElement.style.cursor = this.pointerLocked ? "none" : "crosshair";
   }
 
@@ -209,9 +235,12 @@ export class ThirdPersonController {
   }
 
   update(dt) {
-    // Movement basis is ALWAYS camera yaw (Free + Aim)
+    // Movement basis is ALWAYS camera yaw.
+    // This guarantees W = away from camera (toward what camera faces),
+    // S = toward camera, A/D = parallel to camera left/right.
     const basisYaw = this.camYaw;
 
+    // Forward = where the camera is facing on the ground plane
     const fwd = new THREE.Vector3(Math.sin(basisYaw), 0, Math.cos(basisYaw));
     const right = new THREE.Vector3(fwd.z, 0, -fwd.x);
 
@@ -220,7 +249,7 @@ export class ThirdPersonController {
     if (this.keys.has("KeyW")) z += 1;
     if (this.keys.has("KeyS")) z -= 1;
 
-    // Mapping preserved from your working build
+    // Keep your working mapping (don’t flip it again)
     if (this.keys.has("KeyD")) x -= 1;
     if (this.keys.has("KeyA")) x += 1;
 
@@ -293,7 +322,7 @@ export class ThirdPersonController {
     }
 
     // Facing:
-    // - Aim mode: snap to camera yaw
+    // - Aim mode: snap to camera yaw (crosshair feel)
     // - Free mode: face movement direction when moving
     let bodyYaw = this._bodyYaw;
     if (this.pointerLocked) {
