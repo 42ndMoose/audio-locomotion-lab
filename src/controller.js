@@ -2,14 +2,7 @@ import * as THREE from "three";
 import { clamp, damp, nowSec } from "./utils.js";
 
 export class ThirdPersonController {
-  constructor({
-    camera,
-    domElement,
-    characterRoot,
-    getGroundHeightAt,
-    hud,
-    onPose,
-  }) {
+  constructor({ camera, domElement, characterRoot, getGroundHeightAt, hud, onPose }) {
     this.camera = camera;
     this.domElement = domElement;
     this.characterRoot = characterRoot;
@@ -17,27 +10,24 @@ export class ThirdPersonController {
     this.hud = hud;
     this.onPose = onPose || null;
 
-    // Kinematic state
     this.pos = new THREE.Vector3(0, 1.0, 0);
     this.vel = new THREE.Vector3();
     this.move = new THREE.Vector3();
 
-    // Free camera orbit angles (used in free mode, also used as the basis for WASD)
+    // Free camera orbit (also movement basis)
     this.camYaw = 0;
     this.camPitch = -0.20;
 
-    // Aim angles (only meaningful in pointer lock; we keep them to avoid drift)
+    // Aim angles (pointer lock drives these)
     this.aimYaw = 0;
     this.aimPitch = -0.15;
 
-    // Camera distance
     this.camTargetDist = 6.0;
     this.camDist = 6.0;
     this.camMin = 2.0;
     this.camMax = 18.0;
     this.camHeight = 1.6;
 
-    // Movement tuning
     this.walkSpeed = 6.0;
     this.sprintSpeeds = [0, 10.0, 16.0, 26.0, 42.0];
     this.accelGround = 52.0;
@@ -47,31 +37,21 @@ export class ThirdPersonController {
     this.gravity = 26.0;
     this.jumpSpeed = 8.5;
 
-    // Crouch
     this.isCrouching = false;
     this.crouchHeightFactor = 0.65;
 
-    // Sprint
     this.sprintStage = 0;
     this.sprintHeld = false;
     this.lastShiftUpAt = -999;
     this.shiftChainWindow = 2.0;
 
-    // Grounded
     this.grounded = false;
 
-    // Input
     this.keys = new Set();
     this.rmbHeld = false;
     this.pointerLocked = false;
 
-    // Cursor behavior
-    this.firstLmbDone = false;
-
-    // Sensitivity
     this.sens = 0.0025;
-
-    // Facing cache
     this._bodyYaw = 0;
 
     this._bindEvents();
@@ -89,15 +69,8 @@ export class ThirdPersonController {
         if (!this.sprintHeld) this._onShiftDown();
         this.sprintHeld = true;
       }
-
-      if (e.code === "ControlLeft" || e.code === "ControlRight") {
-        this.isCrouching = true;
-      }
-
-      if (e.code === "Space") {
-        this._tryJump();
-      }
-
+      if (e.code === "ControlLeft" || e.code === "ControlRight") this.isCrouching = true;
+      if (e.code === "Space") this._tryJump();
       this.keys.add(e.code);
     };
 
@@ -106,23 +79,16 @@ export class ThirdPersonController {
         this.sprintHeld = false;
         this.lastShiftUpAt = nowSec();
       }
-
-      if (e.code === "ControlLeft" || e.code === "ControlRight") {
-        this.isCrouching = false;
-      }
-
+      if (e.code === "ControlLeft" || e.code === "ControlRight") this.isCrouching = false;
       this.keys.delete(e.code);
     };
 
     const onMouseDown = (e) => {
       if (e.button === 2) this.rmbHeld = true;
 
+      // LMB enters aim (pointer lock)
       if (e.button === 0) {
-        this.firstLmbDone = true;
-
-        // LMB enters Aim mode (pointer lock) — keep this behavior since you said you like aim mode
         this.domElement.requestPointerLock?.();
-
         this._updateCursorStyle();
       }
     };
@@ -135,15 +101,14 @@ export class ThirdPersonController {
       this.pointerLocked = document.pointerLockElement === this.domElement;
 
       if (this.pointerLocked) {
-        // Entering aim: sync aim to current free camera so there is NO snap
+        // enter aim: no snap
         this.aimYaw = this.camYaw;
         this.aimPitch = this.camPitch;
       } else {
-        // Exiting aim: keep free camera where aim left it (NO displacement)
+        // exit aim: no snap
         this.camYaw = this.aimYaw;
         this.camPitch = this.aimPitch;
       }
-
       this._updateCursorStyle();
     };
 
@@ -151,27 +116,25 @@ export class ThirdPersonController {
       const dx = e.movementX || 0;
       const dy = e.movementY || 0;
 
-      // Aim mode: mouse steers aim; camera follows aim
       if (this.pointerLocked) {
         this.aimYaw -= dx * this.sens;
         this.aimPitch -= dy * this.sens;
         this.aimPitch = clamp(this.aimPitch, -1.1, 0.35);
 
-        // Camera matches aim exactly in aim mode
+        // camera follows aim
         this.camYaw = this.aimYaw;
         this.camPitch = this.aimPitch;
         return;
       }
 
-      // Free mode: RMB drag orbits camera
       if (!this.rmbHeld) return;
 
+      // free orbit
       this.camYaw -= dx * this.sens;
       this.camPitch -= dy * this.sens;
       this.camPitch = clamp(this.camPitch, -1.2, 0.35);
 
-      // IMPORTANT: keep aim angles synced to free camera while not locked
-      // so that entering aim later will be seamless and never "displace" WASD.
+      // KEY FIX: keep aim synced while not locked
       this.aimYaw = this.camYaw;
       this.aimPitch = this.camPitch;
     };
@@ -181,9 +144,7 @@ export class ThirdPersonController {
       this.camTargetDist = clamp(this.camTargetDist + delta * 0.7, this.camMin, this.camMax);
     };
 
-    // Prevent context menu on RMB
     window.addEventListener("contextmenu", (e) => e.preventDefault());
-
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousemove", onMouseMove);
@@ -196,25 +157,17 @@ export class ThirdPersonController {
   }
 
   _updateCursorStyle() {
-    // Cursor visible before first click; after that:
-    // - Aim mode: hidden
-    // - Free mode: crosshair
-    if (!this.firstLmbDone) {
-      this.domElement.style.cursor = "default";
-      return;
-    }
+    // No cursor mode:
+    // free = crosshair, aim = hidden
     this.domElement.style.cursor = this.pointerLocked ? "none" : "crosshair";
   }
 
   _onShiftDown() {
     const t = nowSec();
     const dtSinceUp = t - this.lastShiftUpAt;
-
-    if (dtSinceUp <= this.shiftChainWindow) {
-      this.sprintStage = Math.min(4, Math.max(1, this.sprintStage + 1));
-    } else {
-      this.sprintStage = 1;
-    }
+    this.sprintStage = (dtSinceUp <= this.shiftChainWindow)
+      ? Math.min(4, Math.max(1, this.sprintStage + 1))
+      : 1;
   }
 
   _tryJump() {
@@ -235,25 +188,20 @@ export class ThirdPersonController {
   }
 
   update(dt) {
-    // Movement basis is ALWAYS camera yaw.
-    // This guarantees W = away from camera (toward what camera faces),
-    // S = toward camera, A/D = parallel to camera left/right.
+    // Movement basis ALWAYS camera yaw
     const basisYaw = this.camYaw;
 
-    // Forward = where the camera is facing on the ground plane
     const fwd = new THREE.Vector3(Math.sin(basisYaw), 0, Math.cos(basisYaw));
     const right = new THREE.Vector3(fwd.z, 0, -fwd.x);
 
-    // Inputs
     let x = 0, z = 0;
     if (this.keys.has("KeyW")) z += 1;
     if (this.keys.has("KeyS")) z -= 1;
 
-    // Keep your working mapping (don’t flip it again)
+    // Keep your mapping
     if (this.keys.has("KeyD")) x -= 1;
     if (this.keys.has("KeyA")) x += 1;
 
-    // Build move vector relative to camera
     this.move.set(0, 0, 0);
     this.move.addScaledVector(fwd, z);
     this.move.addScaledVector(right, x);
@@ -261,22 +209,18 @@ export class ThirdPersonController {
     const hasMove = this.move.lengthSq() > 0.0001;
     if (hasMove) this.move.normalize();
 
-    // Speed selection
     const stage = this._sprintStageActive();
     let baseSpeed = this.walkSpeed;
     if (stage > 0) baseSpeed = this.sprintSpeeds[stage];
 
-    const crouch = this.isCrouching;
-    const crouchSpeedFactor = crouch ? 0.78 : 1.0;
+    const crouchSpeedFactor = this.isCrouching ? 0.78 : 1.0;
     const targetSpeed = baseSpeed * crouchSpeedFactor;
 
     const accel = this.grounded ? this.accelGround : this.accelAir;
-    const fric = (crouch && this.grounded) ? this.slideFriction : this.friction;
+    const fric = (this.isCrouching && this.grounded) ? this.slideFriction : this.friction;
 
-    // Horizontal velocity
     const hv = new THREE.Vector3(this.vel.x, 0, this.vel.z);
 
-    // Friction on ground only
     if (this.grounded) {
       const speed = hv.length();
       if (speed > 0.0001) {
@@ -288,10 +232,8 @@ export class ThirdPersonController {
       }
     }
 
-    // Only push toward desired velocity when player is actively giving input
     if (hasMove) {
       const desiredVel = new THREE.Vector3().copy(this.move).multiplyScalar(targetSpeed);
-
       const hvDir = hv.lengthSq() > 0.0001 ? hv.clone().normalize() : null;
       const oppose = hvDir ? (hvDir.dot(this.move) < -0.25) : false;
       const accelUse = oppose ? accel * 1.35 : accel;
@@ -304,11 +246,9 @@ export class ThirdPersonController {
       this.vel.z += delta.z;
     }
 
-    // Gravity + integrate
     this.vel.y -= this.gravity * dt;
     this.pos.addScaledVector(this.vel, dt);
 
-    // Ground collision
     const groundY = this.getGroundHeightAt(this.pos.x, this.pos.z);
     const charHalfHeight = 0.9;
     const footY = this.pos.y - charHalfHeight;
@@ -321,20 +261,17 @@ export class ThirdPersonController {
       this.grounded = false;
     }
 
-    // Facing:
-    // - Aim mode: snap to camera yaw (crosshair feel)
-    // - Free mode: face movement direction when moving
+    // Facing
     let bodyYaw = this._bodyYaw;
     if (this.pointerLocked) {
-      bodyYaw = this.camYaw;
+      bodyYaw = this.camYaw; // aim feel
     } else if (hasMove) {
       bodyYaw = Math.atan2(this.move.x, this.move.z);
     }
-
     this._bodyYaw = bodyYaw;
     this.characterRoot.rotation.y = bodyYaw;
 
-    // Camera placement
+    // Camera
     this.camDist = damp(this.camDist, this.camTargetDist, 10.0, dt);
 
     const height = this.camHeight * (this.isCrouching ? this.crouchHeightFactor : 1.0);
@@ -353,9 +290,7 @@ export class ThirdPersonController {
     this._syncCharacter();
     this._updateHud(stage);
 
-    if (this.onPose) {
-      this.onPose({ position: this.pos, bodyYaw: this._bodyYaw });
-    }
+    if (this.onPose) this.onPose({ position: this.pos, bodyYaw: this._bodyYaw });
   }
 
   _syncCharacter() {
@@ -364,7 +299,6 @@ export class ThirdPersonController {
 
   _updateHud(stageActive) {
     if (!this.hud) return;
-
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.hud.speed.textContent = `Speed: ${speed.toFixed(1)}`;
     this.hud.sprint.textContent = `Sprint: ${stageActive}`;
