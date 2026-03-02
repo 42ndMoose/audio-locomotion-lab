@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audio Locomotion Lab</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="hud">
+    <div class="row">
+      <div class="pill">WASD move</div>
+      <div class="pill">Mouse aim</div>
+      <div class="pill">Space jump</div>
+      <div class="pill">Ctrl slide/crouch</div>
+      <div class="pill">Shift sprint (4 stages)</div>
+      <div class="pill">Alt show cursor</div>
+      <div class="pill">Alt+RMB orbit</div>
+      <div class="pill">Scroll zoom</div>
+    </div>
+
+    <div class="row" id="statusRow">
+      <div class="status" id="status">Click the canvas to lock mouse. Click emitters to play/stop.</div>
+      <div class="status" id="speed">Speed: 0.0</div>
+      <div class="status" id="sprint">Sprint: 0</div>
+      <div class="status" id="mode">Mode: free</div>
+    </div>
+
+    <div class="panel" id="emitterPanel">
+      <div class="panelTitle">Emitters</div>
+      <div class="panelSub">Upload audio per emitter (wav/mp3/ogg). Click emitter in scene to toggle sound.</div>
+      <div id="emitterList"></div>
+    </div>
+
+    <div class="panel" id="assetPanel">
+      <div class="panelTitle">Character Asset (optional)</div>
+      <div class="panelSub">
+        Drop a GLTF/GLB to replace the placeholder. Animations are not wired yet, but the hook is ready.
+      </div>
+      <input id="charFile" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" />
+      <div class="panelSub" id="charHint">
+        If you do nothing, you get the capsule placeholder character.
+      </div>
+    </div>
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <!-- Import map so GitHub Pages can run this as static files -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.1/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
