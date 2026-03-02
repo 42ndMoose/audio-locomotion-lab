@@ -10,6 +10,12 @@ export class ThirdPersonController {
     this.hud = hud;
     this.onPose = onPose || null;
 
+    // Make the game surface focusable so keyboard input works without clicking back in
+    this.domElement.tabIndex = this.domElement.tabIndex || 0;
+    this.domElement.style.outline = "none";
+    this.domElement.focus({ preventScroll: true });
+
+    // Kinematic state
     this.pos = new THREE.Vector3(0, 1.0, 0);
     this.vel = new THREE.Vector3();
     this.move = new THREE.Vector3();
@@ -22,12 +28,14 @@ export class ThirdPersonController {
     this.aimYaw = 0;
     this.aimPitch = -0.15;
 
+    // Camera distance
     this.camTargetDist = 6.0;
     this.camDist = 6.0;
     this.camMin = 2.0;
     this.camMax = 18.0;
     this.camHeight = 1.6;
 
+    // Movement tuning
     this.walkSpeed = 6.0;
     this.sprintSpeeds = [0, 10.0, 16.0, 26.0, 42.0];
     this.accelGround = 52.0;
@@ -37,21 +45,28 @@ export class ThirdPersonController {
     this.gravity = 26.0;
     this.jumpSpeed = 8.5;
 
+    // Crouch (REBIND: use C)
     this.isCrouching = false;
     this.crouchHeightFactor = 0.65;
 
+    // Sprint
     this.sprintStage = 0;
     this.sprintHeld = false;
     this.lastShiftUpAt = -999;
     this.shiftChainWindow = 2.0;
 
+    // Grounded
     this.grounded = false;
 
+    // Input
     this.keys = new Set();
     this.rmbHeld = false;
     this.pointerLocked = false;
 
+    // Sensitivity
     this.sens = 0.0025;
+
+    // Facing cache
     this._bodyYaw = 0;
 
     this._bindEvents();
@@ -63,14 +78,50 @@ export class ThirdPersonController {
     this._syncCharacter();
   }
 
+  _focusGame() {
+    // Alt can shove focus into browser UI; pull it back.
+    // Microtask is usually enough without adding latency.
+    queueMicrotask(() => {
+      this.domElement.focus({ preventScroll: true });
+    });
+  }
+
   _bindEvents() {
     const onKeyDown = (e) => {
+      // Use Alt to exit aim without losing focus
+      if (e.code === "AltLeft" || e.code === "AltRight") {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (this.pointerLocked) {
+          document.exitPointerLock?.();
+        }
+
+        this._focusGame();
+        return;
+      }
+
+      // Try to block some browser shortcuts (not guaranteed in all browsers)
+      if (e.ctrlKey && (e.code === "KeyW" || e.code === "KeyR" || e.code === "KeyT" || e.code === "KeyN")) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
       if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
         if (!this.sprintHeld) this._onShiftDown();
         this.sprintHeld = true;
       }
-      if (e.code === "ControlLeft" || e.code === "ControlRight") this.isCrouching = true;
-      if (e.code === "Space") this._tryJump();
+
+      // Crouch rebind: C
+      if (e.code === "KeyC") {
+        this.isCrouching = true;
+      }
+
+      if (e.code === "Space") {
+        this._tryJump();
+      }
+
       this.keys.add(e.code);
     };
 
@@ -79,7 +130,12 @@ export class ThirdPersonController {
         this.sprintHeld = false;
         this.lastShiftUpAt = nowSec();
       }
-      if (e.code === "ControlLeft" || e.code === "ControlRight") this.isCrouching = false;
+
+      // Crouch rebind: C
+      if (e.code === "KeyC") {
+        this.isCrouching = false;
+      }
+
       this.keys.delete(e.code);
     };
 
@@ -90,6 +146,7 @@ export class ThirdPersonController {
       if (e.button === 0) {
         this.domElement.requestPointerLock?.();
         this._updateCursorStyle();
+        this._focusGame();
       }
     };
 
@@ -108,7 +165,11 @@ export class ThirdPersonController {
         // exit aim: no snap
         this.camYaw = this.aimYaw;
         this.camPitch = this.aimPitch;
+
+        // leaving pointer lock can drop focus, so pull it back
+        this._focusGame();
       }
+
       this._updateCursorStyle();
     };
 
@@ -134,7 +195,7 @@ export class ThirdPersonController {
       this.camPitch -= dy * this.sens;
       this.camPitch = clamp(this.camPitch, -1.2, 0.35);
 
-      // KEY FIX: keep aim synced while not locked
+      // keep aim synced while not locked (prevents displacement)
       this.aimYaw = this.camYaw;
       this.aimPitch = this.camPitch;
     };
@@ -144,14 +205,31 @@ export class ThirdPersonController {
       this.camTargetDist = clamp(this.camTargetDist + delta * 0.7, this.camMin, this.camMax);
     };
 
+    // Don’t get stuck keys when focus changes
+    const onBlur = () => {
+      this.keys.clear();
+      this.rmbHeld = false;
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) onBlur();
+    };
+
     window.addEventListener("contextmenu", (e) => e.preventDefault());
+
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("mousemove", onMouseMove);
+
     this.domElement.addEventListener("mousedown", onMouseDown);
+
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("wheel", onWheel, { passive: true });
     document.addEventListener("pointerlockchange", onPointerLockChange);
+
+    window.addEventListener("focus", () => this._focusGame());
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
 
     this._updateCursorStyle();
   }
